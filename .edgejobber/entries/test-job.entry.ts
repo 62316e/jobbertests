@@ -2,10 +2,12 @@
 import { nanoid } from 'nanoid';
 import { add } from '../../src';
 import { job } from '../../src/job';
+import path from 'path';
 
 @job("test-job")
 export class MyJob {
     run() {
+        console.log('Running MyJob...', path.basename(__filename));
         const id = nanoid();
         console.log('Generated ID:', id);
         const sum = add(10, 10);
