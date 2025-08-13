@@ -8,20 +8,25 @@ import { writeFile } from 'node:fs/promises';
 
 @job("test-job")
 export class MyJob {
-    async run() {
-        // Create a text string and save to text.txt in the current working directory
-        const id = nanoid();
-        const sum = add(10, 10);
-        const content = `Job run at ${new Date().toISOString()}\nID: ${id}\nSum: ${sum}\n`;
-        const outPath = path.resolve(process.cwd(), 'text.txt');
-        await writeFile(outPath, content, 'utf8');
+  async run() {
+    // Create a text string and save to text.txt in the current working directory
+    const id = nanoid();
+    const sum = add(10, 10);
+    const content = `Job run at ${new Date().toISOString()}\nID: ${id}\nSum: ${sum}\n`;
+    const outPath = path.resolve(process.cwd(), "text.txt");
+    await writeFile(outPath, content, "utf8");
 
-    console.log('Running MyJob...', path.basename(fileURLToPath(import.meta.url)));
-        console.log('Generated ID:', id);
-        console.log('Sum:', sum);
-        console.log('Wrote file:', outPath);
-        return { id, sum, outPath };
-    }
+    console.log(
+      "Running MyJob...",
+      path.basename(fileURLToPath(import.meta.url))
+    );
+
+    console.log("Generated ID:", id);
+    console.log("Sum:", sum);
+    console.log("Wrote file:", outPath);
+
+    return { id, sum, outPath };
+  }
 }
 
 export default MyJob;

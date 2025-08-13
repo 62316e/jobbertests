@@ -4,11 +4,11 @@ import { job } from '../../src/job';
 
 @job("test-job-2")
 export class MyJob2 {
-    run() {
-        const sum = add(10, 10);
-        console.log('Sum:', sum);
-        return { sum };
-    }
+  run() {
+    const sum = add(10, 10);
+    console.log("Sum:", sum);
+    return { sum };
+  }
 }
 
 export default MyJob2;

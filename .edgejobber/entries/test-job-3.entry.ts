@@ -3,9 +3,9 @@ import { job } from '../../src/job';
 
 @job("test-job-3")
 export class MyJob3 {
-    run() {
-        return 0;
-    }
+  run() {
+    return 0;
+  }
 }
 
 export default MyJob3;
