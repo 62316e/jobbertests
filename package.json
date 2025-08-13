@@ -10,7 +10,8 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "jest --config jest.config.ts",
-    "test:watch": "jest --config jest.config.ts --watch"
+    "test:watch": "jest --config jest.config.ts --watch",
+    "run:job": "node scripts/run-job.mjs"
   },
   "keywords": [],
   "author": "",

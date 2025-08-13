@@ -1,0 +1,14 @@
+{
+  "rules": {
+    "max-statements-per-line": [
+      "error",
+      {
+        "max": 1
+      }
+    ],
+    "max-len": [
+      "error",
+      { "code": 120, "ignoreStrings": true, "ignoreTemplateLiterals": true }
+    ]
+  }
+}

@@ -1,6 +1,6 @@
 export function add(a: number, b: number): number {
-    return a + b;
+  return a + b;
 }
 
-console.log('Add function loaded');
+console.log("Add function loaded");
 export default { add };

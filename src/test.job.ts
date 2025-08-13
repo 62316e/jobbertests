@@ -1,25 +1,38 @@
-import { nanoid } from 'nanoid';
-import { add } from '.';
-import { job } from './job';
-import path from 'path';
+import { nanoid } from "nanoid";
+import { add } from ".";
+import { job } from "./job";
+import path from "path";
+import { fileURLToPath } from "url";
+import { writeFile } from "node:fs/promises";
 
 @job("test-job")
 export class MyJob {
-    run() {
-        console.log('Running MyJob...', path.basename(__filename));
-        const id = nanoid();
-        console.log('Generated ID:', id);
-        const sum = add(10, 10);
-        console.log('Sum:', sum);
-        return { id, sum };
-    }
+  async run() {
+    // Create a text string and save to text.txt in the current working directory
+    const id = nanoid();
+    const sum = add(10, 10);
+    const content = `Job run at ${new Date().toISOString()}\nID: ${id}\nSum: ${sum}\n`;
+    const outPath = path.resolve(process.cwd(), "text.txt");
+    await writeFile(outPath, content, "utf8");
+
+    console.log(
+      "Running MyJob...",
+      path.basename(fileURLToPath(import.meta.url))
+    );
+
+    console.log("Generated ID:", id);
+    console.log("Sum:", sum);
+    console.log("Wrote file:", outPath);
+
+    return { id, sum, outPath };
+  }
 }
 
 @job("test-job-2")
 export class MyJob2 {
-    run() {
-        const sum = add(10, 10);
-        console.log('Sum:', sum);
-        return { sum };
-    }
+  run() {
+    const sum = add(10, 10);
+    console.log("Sum:", sum);
+    return { sum };
+  }
 }
