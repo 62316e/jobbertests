@@ -15,9 +15,20 @@ async function main() {
 
   const noBuild = process.argv.includes('--no-build');
 
-  // Optionally build if the bundle is missing
-  const bundlePath = path.join(__dirname, '..', 'dist', 'jobs', `${jobId}.js`);
+  // Optionally build if the bundle or manifest is missing
+  const jobsDir = path.join(__dirname, '..', 'dist', 'jobs');
+  const manifestPath = path.join(jobsDir, 'manifest.json');
+  let manifest = null;
+  let bundlePath = path.join(jobsDir, `${jobId}.js`); // fallback single bundle
   try {
+    const m = await fs.readFile(manifestPath, 'utf8').catch(() => null);
+    if (m) {
+      manifest = JSON.parse(m);
+      const entry = manifest[jobId];
+      if (entry) {
+        bundlePath = path.join(__dirname, '..', 'dist', entry.file);
+      }
+    }
     await fs.stat(bundlePath);
   } catch {
     if (noBuild) {
@@ -46,12 +57,35 @@ async function main() {
           : reject(new Error(`Build failed with code ${code}`))
       );
     });
+    // Re-evaluate manifest and bundle after build
+    const m2 = await fs.readFile(manifestPath, 'utf8').catch(() => null);
+    if (m2) {
+      manifest = JSON.parse(m2);
+      const entry = manifest[jobId];
+      if (entry) {
+        bundlePath = path.join(__dirname, '..', 'dist', entry.file);
+      }
+    }
+    // If still not found, fall back to single bundle path
+    try {
+      await fs.stat(bundlePath);
+    } catch {
+      bundlePath = path.join(jobsDir, `${jobId}.js`);
+    }
   }
 
-  // Import and run
+  // Import and run; handle group registry bundles transparently
   const url = pathToFileURL(bundlePath).href;
   const mod = await import(url);
-  const Job = mod.default;
+  let Job = mod.default;
+  if (!Job && mod.registry && typeof mod.registry === 'object') {
+    // It's a grouped bundle - load from registry via manifest
+    const m = manifest || JSON.parse(await fs.readFile(manifestPath, 'utf8'));
+    const entry = m[jobId];
+    if (entry && entry.mode === 'group') {
+      Job = mod.registry[jobId];
+    }
+  }
   if (!Job) {
     console.error('Bundle does not have a default export.');
     process.exit(1);

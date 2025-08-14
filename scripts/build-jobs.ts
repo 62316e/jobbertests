@@ -7,12 +7,14 @@ import { build as tsupBuild } from 'tsup';
 const ROOT = process.cwd();
 const NODE_TARGET = process.env.NODE_TARGET || 'esnext';
 const DECORATOR_NAME = process.env.JOB_DECORATOR || 'job';
+const BUNDLE_DECORATOR_NAME = process.env.BUNDLE_DECORATOR || 'bundleName';
 
 type FoundJob = {
   jobId: string;
   className: string;
   isDefault: boolean;
   isExported: boolean;
+  bundleName?: string | null;
 };
 
 function findDecoratedJobs(code: string): FoundJob[] {
@@ -31,6 +33,7 @@ function findDecoratedJobs(code: string): FoundJob[] {
 
       let hasJob = false;
       let jobId: string | null = null;
+      let bundleName: string | null = null;
 
       for (const d of node.decorators) {
         const expr = d.expression;
@@ -42,8 +45,15 @@ function findDecoratedJobs(code: string): FoundJob[] {
           expr.callee.name === DECORATOR_NAME
         ) {
           hasJob = true;
-          const a0 = expr.arguments[0];
+          const a0 = (expr.arguments || [])[0];
           if (a0 && a0.type === 'StringLiteral') jobId = a0.value;
+        } else if (
+          expr.type === 'CallExpression' &&
+          expr.callee.type === 'Identifier' &&
+          expr.callee.name === BUNDLE_DECORATOR_NAME
+        ) {
+          const a0 = (expr.arguments || [])[0];
+          if (a0 && a0.type === 'StringLiteral') bundleName = a0.value;
         }
       }
       if (!hasJob) return;
@@ -66,7 +76,7 @@ function findDecoratedJobs(code: string): FoundJob[] {
         parentNode.declaration === node;
       const isExported = isDefault || isNamed;
 
-      out.push({ jobId, className: node.id!.name, isDefault, isExported });
+      out.push({ jobId, className: node.id!.name, isDefault, isExported, bundleName });
     },
   });
 
@@ -113,9 +123,10 @@ async function main() {
     }
     if (!j.jobId || !JOB_ID_RE.test(j.jobId)) {
       throw new Error(
-        `Invalid job id "${j.jobId}" for class ${
-          j.className
-        } in ${path.relative(ROOT, j.file)}. Allowed: ${JOB_ID_RE}.`
+        `Invalid job id "${j.jobId}" for class ${j.className} in ${path.relative(
+          ROOT,
+          j.file
+        )}. Allowed: ${JOB_ID_RE}.`
       );
     }
   }
@@ -140,147 +151,83 @@ async function main() {
     throw new Error(`Duplicate job ids detected:\n${dups.join('\n')}`);
   }
 
-  // Create per-job wrapper entry files to allow tree-shaking per job
+  // Parse bundling mode: default per-job; env BUNDLE_MODE=group or argv --bundle=group
+  const argvBundleArg = process.argv.find((a) => a.startsWith('--bundle='));
+  const bundleMode = (argvBundleArg?.split('=')[1] || process.env.BUNDLE_MODE || 'job') as
+    | 'job'
+    | 'group';
+
+  // Prepare entries dir
   const entryDir = path.join(ROOT, 'dist', '.edgejobber', 'entries');
   await fs.mkdir(entryDir, { recursive: true });
 
   const entry: Record<string, string> = {};
+
+  // Build per-job wrappers (skip jobs that are grouped)
   for (const j of jobs) {
+    if (bundleMode === 'group' && j.bundleName) continue;
     const outPath = path.join(entryDir, `${j.jobId}.entry.ts`);
-    const code = await fs.readFile(j.file, 'utf8');
 
-    // Parse the source file to find imports and the specific class declaration
-    const ast = parse(code, {
-      sourceType: 'module',
-      plugins: ['typescript', 'decorators-legacy'],
-    }) as any;
-
-    const imports: Array<{
-      source: string;
-      defaultName?: string;
-      namespaceName?: string;
-      named: Array<{ imported: string; local: string }>;
-      start: number;
-      end: number;
-    }> = [];
-    let classStart = -1;
-    let classEnd = -1;
-    let classNode: any = null;
-    let isDefault = j.isDefault;
-
-    const t = (traverseImport as any).default || (traverseImport as any);
-    t(ast, {
-      ImportDeclaration(p: any) {
-        const node = p.node;
-        const rec = {
-          source: node.source.value as string,
-          defaultName: undefined as string | undefined,
-          namespaceName: undefined as string | undefined,
-          named: [] as Array<{ imported: string; local: string }>,
-          start: node.start as number,
-          end: node.end as number,
-        };
-        for (const s of node.specifiers) {
-          if (s.type === 'ImportDefaultSpecifier')
-            rec.defaultName = s.local.name;
-          else if (s.type === 'ImportNamespaceSpecifier')
-            rec.namespaceName = s.local.name;
-          else if (s.type === 'ImportSpecifier')
-            rec.named.push({ imported: s.imported.name, local: s.local.name });
-        }
-        imports.push(rec);
-      },
-      ClassDeclaration(p: any) {
-        const node = p.node;
-        if (node.id && node.id.name === j.className) {
-          classStart = node.start as number;
-          classEnd = node.end as number;
-          classNode = node;
-          // If this class is default-exported, prefer to keep default
-          isDefault =
-            p.parentPath.node.type === 'ExportDefaultDeclaration' &&
-            p.parentPath.node.declaration === node
-              ? true
-              : false;
-        }
-      },
-    });
-
-    if (classStart < 0 || classEnd < 0 || !classNode) {
-      throw new Error(`Unable to locate class ${j.className} in ${j.file}`);
-    }
-
-    const classCode = code.slice(classStart, classEnd);
-    // Collect referenced identifiers inside the class by parsing classCode separately
-    const classAst = parse(classCode, {
-      sourceType: 'module',
-      plugins: ['typescript', 'decorators-legacy'],
-    }) as any;
-    const neededNames = new Set<string>();
-    t(classAst, {
-      Identifier(p: any) {
-        if (
-          typeof p.isReferencedIdentifier === 'function' &&
-          p.isReferencedIdentifier()
-        ) {
-          const name = p.node.name;
-          // Only record names not bound locally within this parsed class snippet
-          if (!p.scope.hasBinding(name)) {
-            neededNames.add(name);
-          }
-        }
-      },
-    });
-
-    // Rebuild minimal import lines containing only used specifiers
-    const importLines: string[] = [];
-    for (const imp of imports) {
-      const parts: string[] = [];
-      if (imp.defaultName && neededNames.has(imp.defaultName))
-        parts.push(imp.defaultName);
-
-      if (imp.namespaceName && neededNames.has(imp.namespaceName))
-        parts.push(`* as ${imp.namespaceName}`);
-
-      const namedSpecs = imp.named.filter((n) => neededNames.has(n.local));
-      const namedStr = namedSpecs
-        .map((n) =>
-          n.imported === n.local ? n.local : `${n.imported} as ${n.local}`
-        )
-        .join(', ');
-      if (namedStr) parts.push(`{ ${namedStr} }`);
-
-      // Rewrite relative import sources to be relative to the wrapper file
-      let src = imp.source;
-      if (src.startsWith('.')) {
-        const abs = path.resolve(path.dirname(j.file), src);
-        let rel = path
-          .relative(path.dirname(outPath), abs)
-          .split(path.sep)
-          .join('/');
-        if (!rel.startsWith('.')) rel = './' + rel;
-        src = rel;
-      }
-
-      if (parts.length)
-        importLines.push(`import ${parts.join(', ')} from '${src}';`);
-    }
-
-    let moduleText = `// generated by edgejobber for ${j.jobId}\n`;
-    moduleText += importLines.join('\n') + (importLines.length ? '\n\n' : '');
-    moduleText += classCode + '\n';
-    if (!isDefault) moduleText += `\nexport default ${j.className};\n`;
-
+    // Simple wrapper: import module as namespace and re-export the job class as default
+    let relSrc = path
+      .relative(path.dirname(outPath), j.file)
+      .split(path.sep)
+      .join('/');
+    if (!relSrc.startsWith('.')) relSrc = './' + relSrc;
+    const ns = 'mod';
+    const classRef = j.isDefault ? `${ns}.default` : `${ns}.${j.className}`;
+    const moduleText = `// generated by edgejobber (single) for ${j.jobId}\nimport * as ${ns} from '${relSrc}';\nexport default ${classRef};\n`;
     await fs.writeFile(outPath, moduleText, 'utf8');
     entry[`jobs/${j.jobId}`] = outPath;
+  }
+
+  // Build grouped wrappers
+  if (bundleMode === 'group') {
+    const groups = new Map<string, Array<{ file: string } & FoundJob>>();
+    for (const j of jobs) {
+      if (!j.bundleName) continue;
+      groups.set(j.bundleName, [...(groups.get(j.bundleName) || []), j]);
+    }
+    const tasks: Promise<void>[] = [];
+    for (const [groupName, arr] of Array.from(groups.entries())) {
+      tasks.push((async () => {
+        const outPath = path.join(entryDir, `group-${groupName}.entry.ts`);
+        const filesInGroup = Array.from(new Set<string>(arr.map((j) => j.file)));
+        const modNames = new Map<string, string>();
+        const importLines: string[] = [];
+        for (let i = 0; i < filesInGroup.length; i++) {
+          const f = filesInGroup[i];
+          const ns = `m${i}`;
+          let relSrc = path
+            .relative(path.dirname(outPath), f)
+            .split(path.sep)
+            .join('/');
+          if (!relSrc.startsWith('.')) relSrc = './' + relSrc;
+          importLines.push(`import * as ${ns} from '${relSrc}';`);
+          modNames.set(f, ns);
+        }
+        const regLines: string[] = [];
+        for (const j of arr) {
+          const ns = modNames.get(j.file)!;
+          const ref = j.isDefault ? `${ns}.default` : `${ns}.${j.className}`;
+          regLines.push(`  '${j.jobId}': ${ref}`);
+        }
+        const moduleText = `// generated by edgejobber (group: ${groupName})\n${importLines.join(
+          '\n'
+        )}\n\nexport const registry: Record<string, any> = {\n${regLines.join(
+          ',\n'
+        )}\n};\n`;
+        await fs.writeFile(outPath, moduleText, 'utf8');
+        entry[`groups/${groupName}`] = outPath;
+      })());
+    }
+    await Promise.all(tasks);
   }
 
   // Determine dependencies to force-bundle (avoid externalizing node_modules)
   const pkgRaw = await fs.readFile(path.join(ROOT, 'package.json'), 'utf8');
   const pkg = JSON.parse(pkgRaw);
-  const noExternalDeps: (string | RegExp)[] = Object.keys(
-    pkg.dependencies || {}
-  );
+  const noExternalDeps: (string | RegExp)[] = Object.keys(pkg.dependencies || {});
 
   await tsupBuild({
     entry,
@@ -288,12 +235,12 @@ async function main() {
     format: ['esm'],
     platform: 'node',
     target: NODE_TARGET,
-    splitting: false, // ensure fully self-contained bundles per job
+    splitting: false, // ensure fully self-contained bundles per job/group
     treeshake: true,
     minify: false,
     sourcemap: false,
     clean: true,
-    noExternal: noExternalDeps, // bundle listed dependencies into each job
+    noExternal: noExternalDeps, // bundle listed dependencies into each bundle
     external: [
       'node:*',
       'fs',
@@ -314,8 +261,40 @@ async function main() {
     ],
   });
 
+  // Write manifest for runner
+  const manifestDir = path.join(ROOT, 'dist', 'jobs');
+  await fs.mkdir(manifestDir, { recursive: true });
+  const manifest: Record<
+    string,
+    | { mode: 'single'; file: string }
+    | { mode: 'group'; file: string; group: string }
+  > = {};
   for (const j of jobs) {
-    console.log(`Bundled job ${j.jobId} -> dist/jobs/${j.jobId}.js`);
+    if (bundleMode === 'group' && j.bundleName) {
+      manifest[j.jobId] = {
+        mode: 'group',
+        file: `groups/${j.bundleName}.js`,
+        group: j.bundleName,
+      };
+    } else {
+      manifest[j.jobId] = { mode: 'single', file: `jobs/${j.jobId}.js` };
+    }
+  }
+  await fs.writeFile(
+    path.join(manifestDir, 'manifest.json'),
+    JSON.stringify(manifest, null, 2),
+    'utf8'
+  );
+
+  // Logs
+  for (const j of jobs) {
+    if (bundleMode === 'group' && j.bundleName) {
+      console.log(
+        `Bundled job ${j.jobId} in group '${j.bundleName}' -> dist/groups/${j.bundleName}.js`
+      );
+    } else {
+      console.log(`Bundled job ${j.jobId} -> dist/jobs/${j.jobId}.js`);
+    }
   }
 }
 

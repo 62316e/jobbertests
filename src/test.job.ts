@@ -1,10 +1,11 @@
 import { nanoid } from "nanoid";
 import { add } from ".";
-import { job } from "./job";
+import { job, bundleName } from "./job";
 import path from "path";
 import { fileURLToPath } from "url";
 import { writeFile } from "node:fs/promises";
 
+@bundleName("basic")
 @job("test-job")
 export class MyJob {
   async run() {
@@ -28,11 +29,10 @@ export class MyJob {
   }
 }
 
+@bundleName("basic")
 @job("test-job-2")
 export class MyJob2 {
   run() {
-    const sum = add(10, 10);
-    console.log("Sum:", sum);
-    return { sum };
+    return 100;
   }
 }
